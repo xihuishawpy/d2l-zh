@@ -11,10 +11,7 @@ def _unnumber_chaps_and_secs(lines):
                       '\\subsection{Summary',
                       '\\subsection{Exercise',
                       '\\subsection{Exercises'}
-        for unnum in UNNUMBERED:
-            if l.startswith(unnum):
-                return True
-        return False
+        return any(l.startswith(unnum) for unnum in UNNUMBERED)
 
     # Preface, Installation, and Notation are unnumbered chapters
     NUM_UNNUMBERED_CHAPS = 3

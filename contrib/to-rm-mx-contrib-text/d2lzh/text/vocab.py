@@ -17,6 +17,8 @@ class Vocabulary:
         return len(self.idx_to_token)
 
     def to_indices(self, tokens):
-        if not isinstance(tokens, (list, tuple)):
-            return self.token_to_idx.get(tokens, self.unk)
-        return [self.to_indices(token) for token in tokens]
+        return (
+            [self.to_indices(token) for token in tokens]
+            if isinstance(tokens, (list, tuple))
+            else self.token_to_idx.get(tokens, self.unk)
+        )

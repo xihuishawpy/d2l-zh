@@ -334,8 +334,7 @@ def predict_ch3(net, test_iter, n=6):
     trues = d2l.get_fashion_mnist_labels(y)
     preds = d2l.get_fashion_mnist_labels(d2l.argmax(net(X), axis=1))
     titles = [true +'\n' + pred for true, pred in zip(trues, preds)]
-    d2l.show_images(
-        d2l.reshape(X[0:n], (n, 28, 28)), 1, n, titles=titles[0:n])
+    d2l.show_images(d2l.reshape(X[:n], (n, 28, 28)), 1, n, titles=titles[:n])
 
 def evaluate_loss(net, data_iter, loss):
     """评估给定数据集上模型的损失
@@ -349,7 +348,7 @@ def evaluate_loss(net, data_iter, loss):
         metric.add(d2l.reduce_sum(l), d2l.size(l))
     return metric[0] / metric[1]
 
-DATA_HUB = dict()
+DATA_HUB = {}
 DATA_URL = 'http://d2l-data.s3-accelerate.amazonaws.com/'
 
 def download(name, cache_dir=os.path.join('..', 'data')):
@@ -421,7 +420,7 @@ def try_all_gpus():
     Defined in :numref:`sec_use_gpu`"""
     devices = [torch.device(f'cuda:{i}')
              for i in range(torch.cuda.device_count())]
-    return devices if devices else [torch.device('cpu')]
+    return devices or [torch.device('cpu')]
 
 def corr2d(X, K):
     """计算二维互相关运算
@@ -446,11 +445,7 @@ def evaluate_accuracy_gpu(net, data_iter, device=None):
     metric = d2l.Accumulator(2)
     with torch.no_grad():
         for X, y in data_iter:
-            if isinstance(X, list):
-                # BERT微调所需的（之后将介绍）
-                X = [x.to(device) for x in X]
-            else:
-                X = X.to(device)
+            X = [x.to(device) for x in X] if isinstance(X, list) else X.to(device)
             y = y.to(device)
             metric.add(d2l.accuracy(net(X), y), d2l.size(y))
     return metric[0] / metric[1]
@@ -460,7 +455,7 @@ def train_ch6(net, train_iter, test_iter, num_epochs, lr, device):
 
     Defined in :numref:`sec_lenet`"""
     def init_weights(m):
-        if type(m) == nn.Linear or type(m) == nn.Conv2d:
+        if type(m) in [nn.Linear, nn.Conv2d]:
             nn.init.xavier_uniform_(m.weight)
     net.apply(init_weights)
     print('training on', device)
@@ -571,14 +566,18 @@ class Vocab:
         return len(self.idx_to_token)
 
     def __getitem__(self, tokens):
-        if not isinstance(tokens, (list, tuple)):
-            return self.token_to_idx.get(tokens, self.unk)
-        return [self.__getitem__(token) for token in tokens]
+        return (
+            [self.__getitem__(token) for token in tokens]
+            if isinstance(tokens, (list, tuple))
+            else self.token_to_idx.get(tokens, self.unk)
+        )
 
     def to_tokens(self, indices):
-        if not isinstance(indices, (list, tuple)):
-            return self.idx_to_token[indices]
-        return [self.idx_to_token[index] for index in indices]
+        return (
+            [self.idx_to_token[index] for index in indices]
+            if isinstance(indices, (list, tuple))
+            else self.idx_to_token[indices]
+        )
 
     @property
     def unk(self):  # 未知词元的索引为0
@@ -732,14 +731,13 @@ def train_epoch_ch8(net, train_iter, loss, updater, device, use_random_iter):
         if state is None or use_random_iter:
             # 在第一次迭代或使用随机抽样时初始化`state`
             state = net.begin_state(batch_size=X.shape[0], device=device)
+        elif isinstance(net, nn.Module) and not isinstance(state, tuple):
+            # `state`对于`nn.GRU`是个张量
+            state.detach_()
         else:
-            if isinstance(net, nn.Module) and not isinstance(state, tuple):
-                # `state`对于`nn.GRU`是个张量
-                state.detach_()
-            else:
-                # `state`对于`nn.LSTM`或对于我们从零开始实现的模型是个张量
-                for s in state:
-                    s.detach_()
+            # `state`对于`nn.LSTM`或对于我们从零开始实现的模型是个张量
+            for s in state:
+                s.detach_()
         y = Y.T.reshape(-1)
         X, y = X.to(device), y.to(device)
         y_hat, state = net(X, state)
@@ -809,19 +807,35 @@ class RNNModel(nn.Module):
         return output, state
 
     def begin_state(self, device, batch_size=1):
-        if not isinstance(self.rnn, nn.LSTM):
-            # `nn.GRU`以张量作为隐状态
-            return  torch.zeros((self.num_directions * self.rnn.num_layers,
-                                 batch_size, self.num_hiddens),
-                                device=device)
-        else:
-            # `nn.LSTM`以元组作为隐状态
-            return (torch.zeros((
-                self.num_directions * self.rnn.num_layers,
-                batch_size, self.num_hiddens), device=device),
-                    torch.zeros((
+        return (
+            (
+                torch.zeros(
+                    (
                         self.num_directions * self.rnn.num_layers,
-                        batch_size, self.num_hiddens), device=device))
+                        batch_size,
+                        self.num_hiddens,
+                    ),
+                    device=device,
+                ),
+                torch.zeros(
+                    (
+                        self.num_directions * self.rnn.num_layers,
+                        batch_size,
+                        self.num_hiddens,
+                    ),
+                    device=device,
+                ),
+            )
+            if isinstance(self.rnn, nn.LSTM)
+            else torch.zeros(
+                (
+                    self.num_directions * self.rnn.num_layers,
+                    batch_size,
+                    self.num_hiddens,
+                ),
+                device=device,
+            )
+        )
 
 d2l.DATA_HUB['fra-eng'] = (d2l.DATA_URL + 'fra-eng.zip',
                            '94646ad1522d915e7b0f9296181140edcf86a4f5')
@@ -981,8 +995,7 @@ class MaskedSoftmaxCELoss(nn.CrossEntropyLoss):
         self.reduction='none'
         unweighted_loss = super(MaskedSoftmaxCELoss, self).forward(
             pred.permute(0, 2, 1), label)
-        weighted_loss = (unweighted_loss * weights).mean(dim=1)
-        return weighted_loss
+        return (unweighted_loss * weights).mean(dim=1)
 
 def train_seq2seq(net, data_iter, lr, num_epochs, tgt_vocab, device):
     """训练序列到序列模型
@@ -1101,19 +1114,19 @@ def masked_softmax(X, valid_lens):
     """通过在最后一个轴上掩蔽元素来执行softmax操作
 
     Defined in :numref:`sec_attention-scoring-functions`"""
-    # `X`:3D张量，`valid_lens`:1D或2D张量
     if valid_lens is None:
         return nn.functional.softmax(X, dim=-1)
-    else:
-        shape = X.shape
-        if valid_lens.dim() == 1:
-            valid_lens = torch.repeat_interleave(valid_lens, shape[1])
-        else:
-            valid_lens = valid_lens.reshape(-1)
-        # 最后一轴上被掩蔽的元素使用一个非常大的负值替换，从而其softmax输出为0
-        X = d2l.sequence_mask(X.reshape(-1, shape[-1]), valid_lens,
-                              value=-1e6)
-        return nn.functional.softmax(X.reshape(shape), dim=-1)
+    shape = X.shape
+    valid_lens = (
+        torch.repeat_interleave(valid_lens, shape[1])
+        if valid_lens.dim() == 1
+        else valid_lens.reshape(-1)
+    )
+
+    # 最后一轴上被掩蔽的元素使用一个非常大的负值替换，从而其softmax输出为0
+    X = d2l.sequence_mask(X.reshape(-1, shape[-1]), valid_lens,
+                          value=-1e6)
+    return nn.functional.softmax(X.reshape(shape), dim=-1)
 
 class AdditiveAttention(nn.Module):
     """加性注意力
@@ -1315,10 +1328,21 @@ class TransformerEncoder(d2l.Encoder):
         self.pos_encoding = d2l.PositionalEncoding(num_hiddens, dropout)
         self.blks = nn.Sequential()
         for i in range(num_layers):
-            self.blks.add_module("block"+str(i),
-                EncoderBlock(key_size, query_size, value_size, num_hiddens,
-                             norm_shape, ffn_num_input, ffn_num_hiddens,
-                             num_heads, dropout, use_bias))
+            self.blks.add_module(
+                f"block{str(i)}",
+                EncoderBlock(
+                    key_size,
+                    query_size,
+                    value_size,
+                    num_hiddens,
+                    norm_shape,
+                    ffn_num_input,
+                    ffn_num_hiddens,
+                    num_heads,
+                    dropout,
+                    use_bias,
+                ),
+            )
 
     def forward(self, X, valid_lens, *args):
         # 因为位置编码值在-1和1之间，
@@ -1489,11 +1513,7 @@ def train_batch_ch13(net, X, y, loss, trainer, devices):
     """用多GPU进行小批量训练
 
     Defined in :numref:`sec_image_augmentation`"""
-    if isinstance(X, list):
-        # 微调BERT中所需（稍后讨论）
-        X = [x.to(devices[0]) for x in X]
-    else:
-        X = X.to(devices[0])
+    X = [x.to(devices[0]) for x in X] if isinstance(X, list) else X.to(devices[0])
     y = y.to(devices[0])
     net.train()
     trainer.zero_grad()
@@ -1689,8 +1709,7 @@ def offset_boxes(anchors, assigned_bb, eps=1e-6):
     c_assigned_bb = d2l.box_corner_to_center(assigned_bb)
     offset_xy = 10 * (c_assigned_bb[:, :2] - c_anc[:, :2]) / c_anc[:, 2:]
     offset_wh = 5 * d2l.log(eps + c_assigned_bb[:, 2:] / c_anc[:, 2:])
-    offset = d2l.concat([offset_xy, offset_wh], axis=1)
-    return offset
+    return d2l.concat([offset_xy, offset_wh], axis=1)
 
 def multibox_target(anchors, labels):
     """使用真实边界框标记锚框
@@ -1734,8 +1753,7 @@ def offset_inverse(anchors, offset_preds):
     pred_bbox_xy = (offset_preds[:, :2] * anc[:, 2:] / 10) + anc[:, :2]
     pred_bbox_wh = d2l.exp(offset_preds[:, 2:] / 5) * anc[:, 2:]
     pred_bbox = d2l.concat((pred_bbox_xy, pred_bbox_wh), axis=1)
-    predicted_bbox = d2l.box_center_to_corner(pred_bbox)
-    return predicted_bbox
+    return d2l.box_center_to_corner(pred_bbox)
 
 def nms(boxes, scores, iou_threshold):
     """对预测边界框的置信度进行排序
@@ -1816,8 +1834,12 @@ class BananasDataset(torch.utils.data.Dataset):
     Defined in :numref:`sec_object-detection-dataset`"""
     def __init__(self, is_train):
         self.features, self.labels = read_data_bananas(is_train)
-        print('read ' + str(len(self.features)) + (f' training examples' if
-              is_train else f' validation examples'))
+        print(
+            (
+                f'read {len(self.features)}'
+                + (' training examples' if is_train else ' validation examples')
+            )
+        )
 
     def __getitem__(self, idx):
         return (self.features[idx].float(), self.labels[idx])
@@ -1848,7 +1870,7 @@ def read_voc_images(voc_dir, is_train=True):
     with open(txt_fname, 'r') as f:
         images = f.read().split()
     features, labels = [], []
-    for i, fname in enumerate(images):
+    for fname in images:
         features.append(torchvision.io.read_image(os.path.join(
             voc_dir, 'JPEGImages', f'{fname}.jpg')))
         labels.append(torchvision.io.read_image(os.path.join(
@@ -1910,7 +1932,7 @@ class VOCSegDataset(torch.utils.data.Dataset):
                          for feature in self.filter(features)]
         self.labels = self.filter(labels)
         self.colormap2label = voc_colormap2label()
-        print('read ' + str(len(self.features)) + ' examples')
+        print(f'read {len(self.features)} examples')
 
     def normalize_image(self, img):
         return self.transform(img.float() / 255)
@@ -1954,7 +1976,7 @@ def read_csv_labels(fname):
         # 跳过文件头行(列名)
         lines = f.readlines()[1:]
     tokens = [l.rstrip().split(',') for l in lines]
-    return dict(((name, label) for name, label in tokens))
+    return dict(tokens)
 
 def copyfile(filename, target_dir):
     """将文件复制到目标目录
@@ -2180,8 +2202,7 @@ class TokenEmbedding:
     def __getitem__(self, tokens):
         indices = [self.token_to_idx.get(token, self.unknown_idx)
                    for token in tokens]
-        vecs = self.idx_to_vec[d2l.tensor(indices)]
-        return vecs
+        return self.idx_to_vec[d2l.tensor(indices)]
 
     def __len__(self):
         return len(self.idx_to_token)
@@ -2247,8 +2268,7 @@ class MaskLM(nn.Module):
         batch_idx = torch.repeat_interleave(batch_idx, num_pred_positions)
         masked_X = X[batch_idx, pred_positions]
         masked_X = masked_X.reshape((batch_size, num_pred_positions, -1))
-        mlm_Y_hat = self.mlp(masked_X)
-        return mlm_Y_hat
+        return self.mlp(masked_X)
 
 class NextSentencePred(nn.Module):
     """BERT的下一句预测任务
@@ -2334,7 +2354,7 @@ def _replace_mlm_tokens(tokens, candidate_pred_positions, num_mlm_preds,
                         vocab):
     """Defined in :numref:`sec_bert-dataset`"""
     # 为遮蔽语言模型的输入创建新的词元副本，其中输入可能包含替换的“<mask>”或随机词元
-    mlm_input_tokens = [token for token in tokens]
+    mlm_input_tokens = list(tokens)
     pred_positions_and_labels = []
     # 打乱后用于在遮蔽语言模型任务中获取15%的随机词元进行预测
     random.shuffle(candidate_pred_positions)
@@ -2345,13 +2365,10 @@ def _replace_mlm_tokens(tokens, candidate_pred_positions, num_mlm_preds,
         # 80%的时间：将词替换为“<mask>”词元
         if random.random() < 0.8:
             masked_token = '<mask>'
+        elif random.random() < 0.5:
+            masked_token = tokens[mlm_pred_position]
         else:
-            # 10%的时间：保持词不变
-            if random.random() < 0.5:
-                masked_token = tokens[mlm_pred_position]
-            # 10%的时间：用随机词替换该词
-            else:
-                masked_token = random.choice(vocab.idx_to_token)
+            masked_token = random.choice(vocab.idx_to_token)
         mlm_input_tokens[mlm_pred_position] = masked_token
         pred_positions_and_labels.append(
             (mlm_pred_position, tokens[mlm_pred_position]))
@@ -2359,13 +2376,10 @@ def _replace_mlm_tokens(tokens, candidate_pred_positions, num_mlm_preds,
 
 def _get_mlm_data_from_tokens(tokens, vocab):
     """Defined in :numref:`subsec_prepare_mlm_data`"""
-    candidate_pred_positions = []
-    # `tokens`是一个字符串列表
-    for i, token in enumerate(tokens):
-        # 在遮蔽语言模型任务中不会预测特殊词元
-        if token in ['<cls>', '<sep>']:
-            continue
-        candidate_pred_positions.append(i)
+    candidate_pred_positions = [
+        i for i, token in enumerate(tokens) if token not in ['<cls>', '<sep>']
+    ]
+
     # 遮蔽语言模型任务中预测15%的随机词元
     num_mlm_preds = max(1, round(len(tokens) * 0.15))
     mlm_input_tokens, pred_positions_and_labels = _replace_mlm_tokens(
@@ -2558,7 +2572,7 @@ class SNLIDataset(torch.utils.data.Dataset):
         self.premises = self._pad(all_premise_tokens)
         self.hypotheses = self._pad(all_hypothesis_tokens)
         self.labels = torch.tensor(dataset[2])
-        print('read ' + str(len(self.premises)) + ' examples')
+        print(f'read {len(self.premises)} examples')
 
     def _pad(self, lines):
         return torch.tensor([d2l.truncate_pad(
